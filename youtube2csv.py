@@ -13,17 +13,15 @@ def chunklist(l, n):
         yield l[i : i + n]
 
 
-def getallitems(url, params):
+def unpaginateitems(url, params):
     response = requests.get(BASEURL + url, params)
     responsejson = response.json()
-    items = responsejson.get("items", [])
+    yield from responsejson.get("items", [])
 
-    if "nextPageToken" in responsejson:
+    if responsejson.get("nextPageToken", None):
         nextpageparams = params.copy()
         nextpageparams["pageToken"] = responsejson["nextPageToken"]
-        items.extend(getallitems(url, nextpageparams))
-
-    return items
+        yield from unpaginateitems(url, nextpageparams)
 
 
 def savecsv(filename, videos):
@@ -57,48 +55,49 @@ def savecsv(filename, videos):
         writer.writerows(flattenedvideos)
 
 
-def main():
-    apikey = os.environ["YOUTUBE_API_KEY"]
+if __name__ == "__main__":
+    APIKEY = os.environ["YOUTUBE_API_KEY"]
     username = sys.argv[1]
 
     print(f"Fetching channel playlist for {username}...")
-    channel = getallitems(
-        "/channels",
-        params={
-            "key": apikey,
-            "maxResults": 50,
-            "forUsername": username,
-            "part": "contentDetails",
-        },
-    )[0]
+    channel = next(
+        unpaginateitems(
+            "/channels",
+            params={"key": APIKEY, "forUsername": username, "part": "contentDetails"},
+        )
+    )
     playlistid = channel["contentDetails"]["relatedPlaylists"]["uploads"]
     print(f"Found channel playlist {playlistid}.")
 
-    print(f"Fetching uploaded items in {playlistid}...")
-    uploadeditems = getallitems(
+    print(f"Finding videos in {playlistid}...")
+    playlistitems = unpaginateitems(
         "/playlistItems",
         params={
-            "key": apikey,
+            "key": APIKEY,
             "maxResults": 50,
             "playlistId": playlistid,
             "part": "contentDetails",
         },
     )
-    videoids = [item["contentDetails"]["videoId"] for item in uploadeditems]
-    print(f"Found {len(videoids)} videos in {playlistid}.")
+    videoids = []
+    for playlistitem in playlistitems:
+        videoids.append(playlistitem["contentDetails"]["videoId"])
+        print(f"\rFound {len(videoids)} videos...", end="")
+    print()
 
     videos = []
-    for videoidchunk in chunklist(videoids, 20):
-        videosinchunk = getallitems(
-            "/videos",
-            params={
-                "key": apikey,
-                "maxResults": 50,
-                "part": "id,snippet,statistics",
-                "id": ",".join(videoidchunk),
-            },
+    for chunk in chunklist(videoids, 50):
+        videos.extend(
+            unpaginateitems(
+                "/videos",
+                params={
+                    "key": APIKEY,
+                    "maxResults": 50,
+                    "part": "id,snippet,statistics",
+                    "id": ",".join(chunk),
+                },
+            )
         )
-        videos.extend(videosinchunk)
         print(f"\rFetched {len(videos)}/{len(videoids)} videos...", end="")
     print()
 
@@ -106,7 +105,3 @@ def main():
     print(f"Saving results as {filename}...")
     savecsv(filename, videos)
     print("Done.")
-
-
-if __name__ == "__main__":
-    main()
